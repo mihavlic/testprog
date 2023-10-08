@@ -17,7 +17,8 @@ FLAGS:
 
 OPTIONS:
   --root PATH           Sets the root path of the project, otherwise PWD is used.
-  --options STRING      String to pass to the compiler.
+  --no-default          Do not pass the default options to the compiler.
+  --options STRING      String to pass to the compiler, split by whitespace.
   --diff STRING         The command to run to diff mismatched outputs, the paths of the sample and actual output will be appended as arguments.
                         If the string is empty, diffing is skipped without prompting the user.
 
@@ -38,6 +39,7 @@ pub enum Command {
 pub struct AppArgs {
     pub command: Command,
     pub root: PathBuf,
+    pub no_default: bool,
     pub compiler_args: Option<String>,
     pub diff: Option<String>,
     pub targets: Vec<PathBuf>,
@@ -64,6 +66,7 @@ pub fn parse_args() -> Result<AppArgs, pico_args::Error> {
         root: pargs
             .opt_value_from_str("--root")?
             .unwrap_or_else(|| std::env::current_dir().unwrap()),
+        no_default: pargs.contains("--no-default"),
         compiler_args: pargs.opt_value_from_str("--options")?,
         diff: pargs.opt_value_from_str("--diff")?,
         targets: pargs
