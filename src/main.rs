@@ -103,10 +103,10 @@ fn main() {
         }
     }
 
-    let cache_path = args.root.join("out/cache.ron");
+    let cache_path = args.root.join("out/cache.json");
     let mut cache = if cache_path.exists() {
         let contents = std::fs::read_to_string(&cache_path).expect("Couldn't read database file");
-        ron::from_str::<SerdeDatabase>(&contents)
+        serde_json::from_str::<SerdeDatabase>(&contents)
             .expect("Failed to deserialize database")
             .drain()
             .map(|(k, v)| (k, CacheEntry::from(&v)))
@@ -215,7 +215,7 @@ fn save_db(cache: Database, cache_path: &Path) {
         .into_iter()
         .map(|(k, v)| (k, SerdeCacheEntry::from(&v)))
         .collect::<SerdeDatabase>();
-    let serialized = ron::ser::to_string_pretty(&ser, ron::ser::PrettyConfig::default()).unwrap();
+    let serialized = serde_json::ser::to_string_pretty(&ser).unwrap();
 
     let mut file = std::fs::OpenOptions::new()
         .create(true)
