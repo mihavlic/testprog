@@ -228,10 +228,10 @@ fn save_db(cache: Database, cache_path: &Path) {
 }
 
 fn subcomand_test(args: &cli::AppArgs, entry_paths: &[EntryPaths]) {
-    let (w_sender, w_receiver) = std::sync::mpsc::channel::<(ChildStdin, File)>();
+    let (w_sender, w_receiver) = std::sync::mpsc::channel::<(File, ChildStdin)>();
     let join = std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
-        while let Ok((mut stdin, mut file)) = w_receiver.recv() {
+        while let Ok((mut file, mut stdin)) = w_receiver.recv() {
             if let Err(e) = redirect_bytes(&mut file, &mut stdin, &mut buf) {
                 eprintln!("Writing to child stdin failed: {e}");
             }
@@ -287,7 +287,7 @@ fn subcomand_test(args: &cli::AppArgs, entry_paths: &[EntryPaths]) {
                 continue;
             };
 
-            w_sender.send((stdin, input)).expect("Writing thread died");
+            w_sender.send((input, stdin)).expect("Writing thread died");
 
             let mut child_stdout = String::new();
             if let Err(e) = std::io::Read::read_to_string(&mut stdout, &mut child_stdout) {
