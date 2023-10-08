@@ -20,19 +20,19 @@ macro_rules! bail {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
-struct SerdeDbEntry {
+struct SerdeCacheEntry {
     source_hash: String,
     samples_hash: String,
 }
 
 #[derive(Clone, Default)]
-struct DbEntry {
+struct CacheEntry {
     source_hash: u128,
     samples_hash: u128,
 }
 
-impl From<&SerdeDbEntry> for DbEntry {
-    fn from(value: &SerdeDbEntry) -> Self {
+impl From<&SerdeCacheEntry> for CacheEntry {
+    fn from(value: &SerdeCacheEntry) -> Self {
         Self {
             source_hash: u128::from_str_radix(&value.source_hash, 16).unwrap(),
             samples_hash: u128::from_str_radix(&value.samples_hash, 16).unwrap(),
@@ -40,8 +40,8 @@ impl From<&SerdeDbEntry> for DbEntry {
     }
 }
 
-impl From<&DbEntry> for SerdeDbEntry {
-    fn from(value: &DbEntry) -> Self {
+impl From<&CacheEntry> for SerdeCacheEntry {
+    fn from(value: &CacheEntry) -> Self {
         Self {
             source_hash: format!("{:032x}", value.source_hash),
             samples_hash: format!("{:032x}", value.samples_hash),
@@ -49,8 +49,8 @@ impl From<&DbEntry> for SerdeDbEntry {
     }
 }
 
-type SerdeDatabase = HashMap<PathBuf, SerdeDbEntry>;
-type Database = HashMap<PathBuf, DbEntry>;
+type SerdeDatabase = HashMap<PathBuf, SerdeCacheEntry>;
+type Database = HashMap<PathBuf, CacheEntry>;
 
 struct EntryPaths {
     // input source code
@@ -103,13 +103,13 @@ fn main() {
         }
     }
 
-    let db_path = args.root.join("out/db.ron");
-    let mut db = if db_path.exists() {
-        let contents = std::fs::read_to_string(&db_path).expect("Couldn't read database file");
+    let cache_path = args.root.join("out/cache.ron");
+    let mut cache = if cache_path.exists() {
+        let contents = std::fs::read_to_string(&cache_path).expect("Couldn't read database file");
         ron::from_str::<SerdeDatabase>(&contents)
             .expect("Failed to deserialize database")
             .drain()
-            .map(|(k, v)| (k, DbEntry::from(&v)))
+            .map(|(k, v)| (k, CacheEntry::from(&v)))
             .collect()
     } else {
         Database::new()
@@ -139,7 +139,7 @@ fn main() {
             }
         }
 
-        let entry = db.entry(source.clone()).or_default();
+        let entry = cache.entry(source.clone()).or_default();
 
         let binary = out.join(&source).with_extension("");
         let paths = EntryPaths {
@@ -196,7 +196,7 @@ fn main() {
         bail!("Errors occured in previous steps, exiting");
     }
 
-    save_db(db, &db_path);
+    save_db(cache, &cache_path);
 
     match args.command {
         cli::Command::Build => {}
@@ -210,10 +210,10 @@ fn main() {
     }
 }
 
-fn save_db(db: Database, db_path: &Path) {
-    let ser = db
+fn save_db(cache: Database, cache_path: &Path) {
+    let ser = cache
         .into_iter()
-        .map(|(k, v)| (k, SerdeDbEntry::from(&v)))
+        .map(|(k, v)| (k, SerdeCacheEntry::from(&v)))
         .collect::<SerdeDatabase>();
     let serialized = ron::ser::to_string_pretty(&ser, ron::ser::PrettyConfig::default()).unwrap();
 
@@ -221,7 +221,7 @@ fn save_db(db: Database, db_path: &Path) {
         .create(true)
         .truncate(true)
         .write(true)
-        .open(&db_path)
+        .open(&cache_path)
         .unwrap();
 
     file.write_all(serialized.as_bytes()).unwrap();
