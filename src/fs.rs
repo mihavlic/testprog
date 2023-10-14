@@ -52,11 +52,6 @@ pub fn remove_dir_all(path: &Path) -> Result<()> {
     report!(res, "failed to remove_dir_all", path)
 }
 #[track_caller]
-pub fn read_to_string(path: &Path) -> Result<String> {
-    let res = std::fs::read_to_string(path);
-    report!(res, "failed to read_to_string", path)
-}
-#[track_caller]
 pub fn read(path: &Path) -> Result<Vec<u8>> {
     let res = std::fs::read(path);
     report!(res, "failed to read file", path)
@@ -100,39 +95,3 @@ pub fn report(message: impl Display, path: &Path) -> AlreadyReported {
     log::error!("{} `{}`", message, path.display());
     AlreadyReported
 }
-
-// trait ReportError: Sized {
-//     #[track_caller]
-//     fn report(self) -> Self;
-
-// #[track_caller]
-// fn report_error(self) -> Self {
-//     self.report(log::Level::Error)
-// }
-// #[track_caller]
-// fn report_warn(self) -> Self {
-//     self.report(log::Level::Warn)
-// }
-// #[track_caller]
-// fn report_info(self) -> Self {
-//     self.report(log::Level::Info)
-// }
-// #[track_caller]
-// fn report_debug(self) -> Self {
-//     self.report(log::Level::Debug)
-// }
-// #[track_caller]
-// fn report_trace(self) -> Self {
-//     self.report(log::Level::Trace)
-// }
-// }
-
-// impl<T, E: std::fmt::Display> ReportError for std::result::Result<T, E> {
-//     #[track_caller]
-//     fn report(self, message) -> Self {
-//         if let Err(e) = &self {
-//             log::error!("{e}");
-//         }
-//         self
-//     }
-// }
