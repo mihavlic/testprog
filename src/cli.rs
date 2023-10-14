@@ -7,32 +7,32 @@ USAGE:
   runner [SUBCOMMAND] [OPTIONS] [INPUT]
 
 SUBCOMMANDS:
-  build                     Build multiple binaries.
-  test                      Run multiple binaries, then feed them test files extracted from their neighboring samples archive.
-  run                       Run a single binary which inherits stdin.
-  clean                     Delete the output directory.
+  build                     Build multiple binaries
+  test                      Run multiple binaries, then feed them test files extracted from their neighboring samples archive
+  run                       Run a single binary which inherits stdin
+  clean                     Delete the output directory
 
 FLAGS:
-  -h, --help                Prints help information.
-  -v, --verbose             Increse output verbosity, can be specified second time to get trace messages.
-  -q, --quiet               Print only errors.
-  --unix                    Use LF line endings (select sample files which do not end with '_win').
-  --windows                 Use CRLF line endings (select sample files which end with '_win').
+  -h, --help                Prints help information
+  -v, --verbose             Increse output verbosity, can be specified second time to get trace messages
+  -q, --quiet               Print only errors
+  --unix                    Use LF line endings (select sample files which do not end with '_win')
+  --windows                 Use CRLF line endings (select sample files which end with '_win')
 
 OPTIONS:
-  --root PATH               Sets the root path of the project, otherwise PWD is used.
-  --args STRING             Additional options to pass to the compiler, split by whitespace.
-  --override-args STRING    Options to pass to the compiler, split by whitespace. This completely overrides the default progtest arguments '-std=c++11 -Wall -pedantic'.
-  --subdir STRING           Name of a subdirectory within the samples archive to include, by default is 'CZE'.
-  --diff STRING             The command to run to diff mismatched outputs, it is interpreted by the shell, the variables $EXPECTED and $ACTUAL are present.
+  --root PATH               Sets the root path of the project, otherwise PWD is used
+  --args STRING             Additional options to pass to the compiler, split by whitespace
+  --override-args STRING    Options to pass to the compiler, split by whitespace. This completely overrides the default progtest arguments '-std=c++11 -Wall -pedantic'
+  --subdir STRING           Name of a subdirectory within the samples archive to include, by default is 'CZE'
+  --diff STRING             The command to run to diff mismatched outputs, it is interpreted by the shell, the variables $EXPECTED and $ACTUAL are present
   --ask 'SKIP' 'NO' 'ASK'
-                            What to do when a test fails.
-                             - SKIP informs of the failure and continues.
-                             - NO doesn't prompt and immediatelly shows the diff.
+                            What to do when a test fails
+                             - SKIP informs of the failure and continues
+                             - NO doesn't prompt and immediatelly shows the diff
                              - ASK prompts the user. 
 
 INPUT:
-                            The names of the source files to use, relative to the root directory. For example 'pa1/01.c'.
+                            The names of the source files to use, relative to the root directory. For example 'pa1/01.c'
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,13 +84,11 @@ pub fn parse_args() -> Result<AppArgs, pico_args::Error> {
     #[cfg(not(target_os = "windows"))]
     let auto_endings = LineEnding::Lf;
 
+    #[rustfmt::skip]
     let args = AppArgs {
-        root: pargs
-            .opt_value_from_str("--root")?
-            .unwrap_or_else(|| std::env::current_dir().unwrap()),
+        root: pargs.opt_value_from_str("--root")?.unwrap_or_else(|| std::env::current_dir().unwrap()),
         quiet: pargs.contains(["-q", "--quiet"]),
-        verbosity: pargs.contains(["-v", "--verbose"]) as u32
-            + pargs.contains(["-v", "--verbose"]) as u32,
+        verbosity: pargs.contains(["-v", "--verbose"]) as u32 + pargs.contains(["-v", "--verbose"]) as u32,
         compiler_args: pargs.opt_value_from_str("--args")?,
         override_compiler_args: pargs.opt_value_from_str("--override-args")?,
         diff: pargs.opt_value_from_str("--diff")?,
@@ -110,6 +108,7 @@ pub fn parse_args() -> Result<AppArgs, pico_args::Error> {
             "ask" | "ASK" => Interactivity::Ask,
             _ => Interactivity::Ask,
         },
+        // these two musy go at the end
         command: get_command(&mut pargs)?,
         targets: pargs
             .finish()
