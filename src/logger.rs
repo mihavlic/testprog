@@ -1,4 +1,7 @@
+#![allow(dead_code)]
+
 use log::{Metadata, Record};
+use nu_ansi_term::Color;
 
 #[derive(Clone, Debug)]
 pub struct CustomLogger {
@@ -9,8 +12,20 @@ pub struct CustomLogger {
 }
 
 impl CustomLogger {
-    pub fn with_level(&mut self, level: log::LevelFilter) -> &mut CustomLogger {
+    pub fn max_level(&mut self, level: log::LevelFilter) -> &mut CustomLogger {
         self.max_level = self.max_level.max(level);
+        self
+    }
+    pub fn print_level(&mut self, print_level: bool) -> &mut CustomLogger {
+        self.print_level = print_level;
+        self
+    }
+    pub fn print_file(&mut self, print_file: bool) -> &mut CustomLogger {
+        self.print_file = print_file;
+        self
+    }
+    pub fn color(&mut self, color: bool) -> &mut CustomLogger {
+        self.color = color;
         self
     }
     pub fn install(&self) {
@@ -29,28 +44,27 @@ impl log::Log for CustomLogger {
             return;
         }
 
-        let level = record.level();
-        let color = match level {
-            log::Level::Error => nu_ansi_term::Color::Red,
-            log::Level::Warn => nu_ansi_term::Color::Yellow,
-            log::Level::Debug => nu_ansi_term::Color::Blue,
-            log::Level::Info => nu_ansi_term::Color::Green,
-            log::Level::Trace => nu_ansi_term::Color::Magenta,
+        let (color, level) = match record.level() {
+            log::Level::Error => (Color::Red, "error"),
+            log::Level::Warn => (Color::Yellow, "warn"),
+            log::Level::Debug => (Color::Blue, "debug"),
+            log::Level::Info => (Color::Green, ""),
+            log::Level::Trace => (Color::Magenta, "trace"),
         };
-        let (pre, post) = (color.prefix(), color.suffix());
 
-        if self.print_level {
+        if self.print_level && !level.is_empty() {
+            let (pre, post) = (color.prefix(), color.suffix());
             if self.color {
-                eprint!("{pre}{level:5?}{post} ");
+                eprint!("{pre}{level:5}{post} ");
             } else {
-                eprint!("{level:5?} ")
+                eprint!("{level:5} ")
             }
         }
 
         if self.print_file {
             if let (Some(file), Some(line)) = (record.file(), record.line()) {
                 if self.color {
-                    let gray = nu_ansi_term::Color::LightGray;
+                    let gray = Color::LightGray;
                     eprint!("{}{file}:{line}{} ", gray.prefix(), gray.suffix());
                 } else {
                     eprint!("{file}:{line} ")

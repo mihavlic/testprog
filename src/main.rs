@@ -2,9 +2,10 @@ mod cli;
 mod fs;
 mod logger;
 
-use clap::Parser;
+use clap::{ColorChoice, Parser};
 use cli::{Arguments, Command, Os};
 use fs::{report, report_io_error, AlreadyReported};
+use nu_ansi_term::Color;
 use std::{
     collections::HashMap,
     ffi::OsStr,
@@ -78,12 +79,8 @@ fn main() {
     }
 }
 
-fn main_() -> Result<(), AlreadyReported> {
-    let args = Arguments::parse();
-    // parse_args().map_err(|e| {
-    //     eprintln!("Failed to parse arguments {e}");
-    //     AlreadyReported
-    // })?;
+fn init() -> Arguments {
+    let mut args = Arguments::parse();
 
     let level = match (args.quiet, args.verbose) {
         (true, _) => log::LevelFilter::Error,
@@ -92,7 +89,27 @@ fn main_() -> Result<(), AlreadyReported> {
         (false, _) => log::LevelFilter::Trace,
     };
 
-    logger::make_logger_from_env().with_level(level).install();
+    let color = match args.color {
+        clap::ColorChoice::Auto => anstyle_query::term_supports_ansi_color(),
+        clap::ColorChoice::Always => true,
+        clap::ColorChoice::Never => false,
+    };
+
+    if !color {
+        args.color = clap::ColorChoice::Never;
+    }
+
+    logger::make_logger_from_env()
+        .max_level(level)
+        .print_level(true)
+        .color(color)
+        .install();
+    args
+}
+
+fn main_() -> Result<(), AlreadyReported> {
+    let args = init();
+
     log::trace!("{args:#?}");
 
     let out_path = args.root.join("out");
@@ -220,14 +237,14 @@ fn load_cache(cache_path: &Path) -> fs::Result<Cache> {
     match std::fs::read_to_string(cache_path) {
         Ok(contents) => Ok(serde_json::from_str::<SerdeCache>(&contents)
             .map_err(|e| {
-                log::trace!("Failed to deserialize cache\n    {e}");
+                log::trace!("failed to deserialize cache\n  {e}");
                 AlreadyReported
             })?
             .drain()
             .map(|(k, v)| (k, CacheEntry::from(&v)))
             .collect()),
         Err(e) => {
-            log::trace!("Failed to load `{}`\n    {e}", cache_path.display());
+            log::trace!("failed to load `{}`\n  {e}", cache_path.display());
             Err(AlreadyReported)
         }
     }
@@ -319,8 +336,14 @@ fn test_samples(
     let expected = fs::read(output)?;
 
     let display = input.display();
-    let err = nu_ansi_term::Color::LightRed.paint("Err");
-    let ok = nu_ansi_term::Color::LightGreen.paint("Ok");
+
+    // janky configurable color
+    let (red, green) = match args.color == ColorChoice::Never {
+        true => (Color::Default, Color::Default),
+        false => (Color::LightRed, Color::LightGreen),
+    };
+    let err = red.paint("Err");
+    let ok = green.paint("Ok");
 
     if child_stdout != expected {
         log::info!(" {display} {err}",);
@@ -364,17 +387,17 @@ fn collect_samples(dir: &Path, args: &Arguments) -> Vec<(PathBuf, TestSample)> {
                         let entry = samples.entry(full).or_default();
                         if input {
                             if entry.input.is_some() {
-                                log::error!("Duplicate input file {}", file.display());
+                                log::error!("duplicate input file {}", file.display());
                             }
                             entry.input = Some(file.to_owned());
                         } else {
                             if entry.output.is_some() {
-                                log::error!("Duplicate output file {}", file.display());
+                                log::error!("duplicate output file {}", file.display());
                             }
                             entry.output = Some(file.to_owned());
                         }
                     } else {
-                        log::trace!("Skipping {}: endings do not match", file.display());
+                        log::trace!("skipping {}: endings do not match", file.display());
                     }
                 };
 
@@ -493,7 +516,7 @@ fn visit_files_impl(
         let entry = match element {
             Ok(ok) => ok,
             Err(e) => {
-                log::trace!("Error listing {dir:?}: {e}");
+                log::trace!("error listing {dir:?}: {e}");
                 continue;
             }
         };

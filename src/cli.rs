@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{ColorChoice, Parser, ValueEnum};
 use std::{ffi::OsString, path::PathBuf};
 
 #[derive(Copy, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -74,6 +74,9 @@ pub struct Arguments {
     /// Whether to prompt the user
     #[arg(long, value_enum, default_value_t = Interactivity::Yes)]
     pub ask: Interactivity,
+    /// The action to perform
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
+    pub color: ColorChoice,
     /// The action to perform
     #[arg(value_enum)]
     pub command: Command,

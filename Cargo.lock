@@ -257,6 +257,7 @@ dependencies = [
 name = "testprog"
 version = "0.1.0"
 dependencies = [
+ "anstyle-query",
  "blake3",
  "clap",
  "log",

@@ -22,7 +22,7 @@ macro_rules! report {
         match $result {
             Ok(ok) => Ok(ok),
             Err(e) => {
-                log::error!("{} `{}`\n    {e}", $message, $path.display());
+                log::error!("{} `{}`\n  {e}", $message, $path.display());
                 Err(AlreadyReported)
             }
         }
@@ -78,7 +78,7 @@ pub fn options_open(path: &Path, options: &std::fs::OpenOptions) -> Result<std::
 }
 
 pub fn report_custom(message: impl Display, error: impl Display) -> AlreadyReported {
-    log::error!("{message}\n    {error}");
+    log::error!("{message}\n  {error}");
     AlreadyReported
 }
 
@@ -87,7 +87,7 @@ pub fn report_io_error(
     path: &Path,
     error: std::io::Error,
 ) -> AlreadyReported {
-    log::error!("{message} `{}`\n    {error}", path.display());
+    log::error!("{message} `{}`\n  {error}", path.display());
     AlreadyReported
 }
 
