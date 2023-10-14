@@ -2,7 +2,8 @@ mod cli;
 mod fs;
 mod logger;
 
-use cli::{parse_args, AppArgs, Command, LineEnding};
+use clap::Parser;
+use cli::{Arguments, Command, Os};
 use fs::{report, report_io_error, AlreadyReported};
 use std::{
     collections::HashMap,
@@ -78,12 +79,13 @@ fn main() {
 }
 
 fn main_() -> Result<(), AlreadyReported> {
-    let args = parse_args().map_err(|e| {
-        eprintln!("Failed to parse arguments {e}");
-        AlreadyReported
-    })?;
+    let args = Arguments::parse();
+    // parse_args().map_err(|e| {
+    //     eprintln!("Failed to parse arguments {e}");
+    //     AlreadyReported
+    // })?;
 
-    let level = match (args.quiet, args.verbosity) {
+    let level = match (args.quiet, args.verbose) {
         (true, _) => log::LevelFilter::Error,
         (false, 0) => log::LevelFilter::Info,
         (false, 1) => log::LevelFilter::Debug,
@@ -153,7 +155,7 @@ fn prepare_target(
     out: &Path,
 
     needs_samples: bool,
-    args: &cli::AppArgs,
+    args: &cli::Arguments,
     cache: &mut Cache,
 ) -> Result<EntryPaths, AlreadyReported> {
     if source.is_absolute() {
@@ -249,7 +251,7 @@ fn save_cache(cache: Cache, cache_path: &Path) -> fs::Result<()> {
     fs::write_all(&mut file, cache_path, serialized.as_bytes())
 }
 
-fn subcomand_test(entry_paths: &[EntryPaths], args: &cli::AppArgs) {
+fn subcomand_test(entry_paths: &[EntryPaths], args: &cli::Arguments) {
     let (w_sender, w_receiver) = std::sync::mpsc::channel::<(std::fs::File, ChildStdin)>();
     let join = std::thread::spawn(move || {
         while let Ok((mut file, mut stdin)) = w_receiver.recv() {
@@ -276,7 +278,7 @@ fn test_samples(
     sample: &TestSample,
     paths: &EntryPaths,
     w_sender: &std::sync::mpsc::Sender<(std::fs::File, ChildStdin)>,
-    args: &AppArgs,
+    args: &Arguments,
 ) -> Result<(), AlreadyReported> {
     let Some(input) = &sample.input else {
         bail!(
@@ -329,7 +331,7 @@ fn test_samples(
     Ok(())
 }
 
-fn collect_samples(dir: &Path, args: &AppArgs) -> Vec<(PathBuf, TestSample)> {
+fn collect_samples(dir: &Path, args: &Arguments) -> Vec<(PathBuf, TestSample)> {
     let mut samples: HashMap<PathBuf, TestSample> = HashMap::new();
     let mut depth = 0;
     visit_files(dir, |event| {
@@ -352,12 +354,12 @@ fn collect_samples(dir: &Path, args: &AppArgs) -> Vec<(PathBuf, TestSample)> {
             }
             TraversalEvent::File(file) => {
                 let file = file.strip_prefix(&args.root).unwrap();
-                let mut add = |name: &[u8], endings: LineEnding, input: bool| {
+                let mut add = |name: &[u8], os: Os, input: bool| {
                     log::trace!(
-                        "Found sample file {}: endings {endings:?}, input {input}",
+                        "Found sample file {}: endings {os:?}, input {input}",
                         file.display()
                     );
-                    if args.sample_ending == endings {
+                    if args.os == os {
                         let full = file.parent().unwrap().join(OsStr::from_bytes(name));
                         let entry = samples.entry(full).or_default();
                         if input {
@@ -378,13 +380,13 @@ fn collect_samples(dir: &Path, args: &AppArgs) -> Vec<(PathBuf, TestSample)> {
 
                 let name = file.file_name().unwrap().as_bytes();
                 if let Some(name) = name.strip_suffix(b"_in.txt") {
-                    add(name, LineEnding::Lf, true);
+                    add(name, Os::Unix, true);
                 } else if let Some(name) = name.strip_suffix(b"_out.txt") {
-                    add(name, LineEnding::Lf, false);
+                    add(name, Os::Unix, false);
                 } else if let Some(name) = name.strip_suffix(b"_in_win.txt") {
-                    add(name, LineEnding::CrLf, true);
+                    add(name, Os::Windows, true);
                 } else if let Some(name) = name.strip_suffix(b"_out_win.txt") {
-                    add(name, LineEnding::CrLf, false);
+                    add(name, Os::Windows, false);
                 }
             }
         }
@@ -404,7 +406,7 @@ fn append_filename(path: &Path, append: &str) -> Option<PathBuf> {
     Some(new)
 }
 
-fn diff_failed(expected: &Path, actual: &[u8], args: &AppArgs) -> fs::Result<()> {
+fn diff_failed(expected: &Path, actual: &[u8], args: &Arguments) -> fs::Result<()> {
     let save = append_filename(&expected, ".actual").unwrap();
     fs::write(&save, actual)?;
 
@@ -414,8 +416,8 @@ fn diff_failed(expected: &Path, actual: &[u8], args: &AppArgs) -> fs::Result<()>
 
     let should_diff = match args.ask {
         cli::Interactivity::Skip => false,
-        cli::Interactivity::Confirm => true,
-        cli::Interactivity::Ask => {
+        cli::Interactivity::No => true,
+        cli::Interactivity::Yes => {
             let mut line = String::new();
             let should_diff = loop {
                 eprint!("View diff? [Y/n] ");
@@ -540,7 +542,7 @@ fn extract_archive(paths: &EntryPaths) -> fs::Result<()> {
     check_status("tar", builder.status())
 }
 
-fn compile_file(paths: &EntryPaths, args: &cli::AppArgs) -> fs::Result<()> {
+fn compile_file(paths: &EntryPaths, args: &cli::Arguments) -> fs::Result<()> {
     _ = fs::create_dir_all(paths.binary.parent().unwrap());
     let mut builder = std::process::Command::new("g++");
     if args.override_compiler_args.is_none() {
