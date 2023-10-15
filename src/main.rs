@@ -336,7 +336,6 @@ fn test_samples(
     let expected = fs::read(output)?;
 
     let display = input.display();
-
     // janky configurable color
     let (red, green) = match args.color == ColorChoice::Never {
         true => (Color::Default, Color::Default),
@@ -347,7 +346,7 @@ fn test_samples(
 
     if child_stdout != expected {
         log::info!(" {display} {err}",);
-        _ = diff_failed(output, &child_stdout, args);
+        _ = diff_failed(input, output, &child_stdout, args);
     } else {
         log::info!(" {display} {ok}");
     }
@@ -429,7 +428,7 @@ fn append_filename(path: &Path, append: &str) -> Option<PathBuf> {
     Some(new)
 }
 
-fn diff_failed(expected: &Path, actual: &[u8], args: &Arguments) -> fs::Result<()> {
+fn diff_failed(input: &Path, expected: &Path, actual: &[u8], args: &Arguments) -> fs::Result<()> {
     let save = append_filename(&expected, ".actual").unwrap();
     fs::write(&save, actual)?;
 
@@ -463,6 +462,7 @@ fn diff_failed(expected: &Path, actual: &[u8], args: &Arguments) -> fs::Result<(
         builder
             .arg("-c")
             .arg(diff)
+            .env("INPUT", input)
             .env("EXPECTED", expected)
             .env("ACTUAL", save);
 

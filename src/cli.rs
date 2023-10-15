@@ -64,7 +64,7 @@ pub struct Arguments {
     pub diff: Option<String>,
     /// The command to run to diff mismatched outputs
     ///
-    /// It is interpreted by the shell, the variables $EXPECTED and $ACTUAL are present
+    /// It is interpreted by the shell, the variables $INPUT, $EXPECTED, and $ACTUAL are present
     #[arg(long = "subdir", value_name = "STRING", default_values_os_t = [OsString::from("CZE")])]
     /// Name of a subdirectory within the samples archive to include
     pub sample_subdirs: Vec<OsString>,
