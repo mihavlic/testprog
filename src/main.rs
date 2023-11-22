@@ -9,6 +9,7 @@ use nu_ansi_term::Color;
 use std::{
     collections::HashMap,
     ffi::OsStr,
+    hash::{Hash, Hasher},
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
     process::ChildStdin,
@@ -167,6 +168,12 @@ fn main_() -> Result<(), AlreadyReported> {
     Ok(())
 }
 
+fn into_hash<T: Hash>(value: &T) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
 fn prepare_target(
     source: &Path,
     out: &Path,
@@ -185,7 +192,10 @@ fn prepare_target(
     let entry = cache.entry(source.to_path_buf()).or_default();
     let paths = make_paths(source, out);
 
-    let source_hash = hash_file(&paths.source)?;
+    let file_hash = hash_file(&paths.source)?;
+    let flags_hash = into_hash(&args.compiler_args.as_deref().unwrap_or(""));
+    let source_hash = file_hash ^ flags_hash as u128;
+
     if entry.source_hash != source_hash {
         entry.source_hash = source_hash;
         log::info!("building {}", paths.source.display());

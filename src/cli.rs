@@ -47,7 +47,7 @@ pub struct Arguments {
     // Print only errors
     #[arg(long, short, conflicts_with = "verbose")]
     pub quiet: bool,
-    /// Print only errors
+    /// Options to pass to the compiler, split by whitespace
     #[arg(long = "options", value_name = "STRING")]
     pub compiler_args: Option<String>,
     /// Additional options to pass to the compiler, split by whitespace
