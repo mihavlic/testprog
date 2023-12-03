@@ -143,7 +143,9 @@ fn main_() -> Result<(), AlreadyReported> {
     let entry_paths = args
         .targets
         .iter()
-        .flat_map(|source| prepare_target(source, &out_path, needs_samples, &args, &mut cache))
+        .flat_map(|source| {
+            prepare_target(source.as_ref(), &out_path, needs_samples, &args, &mut cache)
+        })
         .collect::<Vec<_>>();
 
     if entry_paths.len() != args.targets.len() {
@@ -155,12 +157,12 @@ fn main_() -> Result<(), AlreadyReported> {
 
     match args.command {
         Command::Build => {}
+        Command::With => subcommand_with(&entry_paths, &args),
         Command::Clean => {}
         Command::Run => {
             let entry = entry_paths.first().unwrap();
             log::info!("Running {}", entry.source.display());
-            let status = std::process::Command::new(&entry.binary).status();
-            check_status("child", status)?;
+            exec(&mut std::process::Command::new(&entry.binary))?;
         }
         Command::Test => subcomand_test(&entry_paths, &args),
     }
@@ -185,15 +187,16 @@ fn prepare_target(
     if source.is_absolute() {
         report("path is absolute", source).to_result()?;
     }
-    if source.extension() != Some(OsStr::from_bytes(b"c")) {
-        report("must be a C source file", source).to_result()?;
+    let ext = source.extension().unwrap_or_default().as_bytes();
+    if ext != b"c" && ext != b"cpp" {
+        report("must be a C/C++ source file", source).to_result()?;
     }
 
     let entry = cache.entry(source.to_path_buf()).or_default();
     let paths = make_paths(source, out);
 
     let file_hash = hash_file(&paths.source)?;
-    let flags_hash = into_hash(&args.compiler_args.as_deref().unwrap_or(""));
+    let flags_hash = into_hash(&(&args.compiler_args, &args.defines));
     let source_hash = file_hash ^ flags_hash as u128;
 
     if entry.source_hash != source_hash {
@@ -276,6 +279,42 @@ fn save_cache(cache: Cache, cache_path: &Path) -> fs::Result<()> {
     )?;
 
     fs::write_all(&mut file, cache_path, serialized.as_bytes())
+}
+
+fn subcommand_with(entry_paths: &[EntryPaths], args: &cli::Arguments) {
+    let artifacts = entry_paths.iter().map(|p| p.binary.as_os_str().to_owned());
+    let mut arguments = args.with.clone();
+
+    let mut bin_subsituted = false;
+    let mut i = 0;
+    while i < arguments.len() {
+        let current = &arguments[i];
+        if let b"{bin}" = current.as_bytes() {
+            arguments.splice(i..=i, artifacts.clone());
+            i += entry_paths.len();
+            bin_subsituted = true;
+        } else {
+            i += 1;
+        }
+    }
+    if !bin_subsituted {
+        arguments.extend(artifacts);
+    }
+
+    _ = exec(std::process::Command::new(&arguments[0]).args(&arguments[1..]));
+}
+
+#[cfg(unix)]
+fn exec(command: &mut std::process::Command) -> fs::Result<()> {
+    use std::os::unix::process::CommandExt;
+    print_args(command);
+    check_status("child", Err(command.exec()))
+}
+
+#[cfg(not(unix))]
+fn exec(command: &mut std::process::Command) -> fs::Result<()> {
+    print_args(command);
+    check_status("child", command.status())
 }
 
 fn subcomand_test(entry_paths: &[EntryPaths], args: &cli::Arguments) {
@@ -577,9 +616,16 @@ fn extract_archive(paths: &EntryPaths) -> fs::Result<()> {
 
 fn compile_file(paths: &EntryPaths, args: &cli::Arguments) -> fs::Result<()> {
     _ = fs::create_dir_all(paths.binary.parent().unwrap());
+    if paths.binary.exists() {
+        _ = fs::remove_file(&paths.binary);
+    }
     let mut builder = std::process::Command::new("g++");
     if args.override_compiler_args.is_none() {
         builder.args(&["-std=c++11", "-Wall", "-pedantic"]);
+    }
+    for define in &args.defines {
+        builder.arg("-D");
+        builder.arg(define);
     }
     builder
         .args(

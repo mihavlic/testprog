@@ -52,6 +52,11 @@ pub fn remove_dir_all(path: &Path) -> Result<()> {
     report!(res, "failed to remove_dir_all", path)
 }
 #[track_caller]
+pub fn remove_file(path: &Path) -> Result<()> {
+    let res = std::fs::remove_file(path);
+    report!(res, "failed to remove_file", path)
+}
+#[track_caller]
 pub fn read(path: &Path) -> Result<Vec<u8>> {
     let res = std::fs::read(path);
     report!(res, "failed to read file", path)

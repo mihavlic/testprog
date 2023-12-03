@@ -5,9 +5,11 @@ use std::{ffi::OsString, path::PathBuf};
 pub enum Command {
     /// Build multiple binaries
     Build,
-    /// Run multiple binaries, then feed them test files extracted from their neighboring samples archive
-    Run,
+    /// Build binaries, then run specified command with
+    With,
     /// Run a single binary which inherits stdin
+    Run,
+    /// Run multiple binaries, then feed them test files extracted from their neighboring samples archive
     Test,
     /// Delete the output directory
     Clean,
@@ -47,6 +49,9 @@ pub struct Arguments {
     // Print only errors
     #[arg(long, short, conflicts_with = "verbose")]
     pub quiet: bool,
+    /// Define a preprocessor variable
+    #[arg(long = "define", short = 'D', value_name = "<macroname>=<value>", action = clap::ArgAction::Append)]
+    pub defines: Vec<String>,
     /// Options to pass to the compiler, split by whitespace
     #[arg(long = "options", value_name = "STRING")]
     pub compiler_args: Option<String>,
@@ -82,5 +87,9 @@ pub struct Arguments {
     pub command: Command,
     /// The names of the source files to use, relative to the root directory
     #[arg(value_name = "DIR")]
-    pub targets: Vec<PathBuf>,
+    pub targets: Vec<OsString>,
+    /// Command and arguments to execute as the `with` command, the placeholder {bin} denotes the
+    /// path to the built binaries, it is appended to the arguments if omitted
+    #[arg(last = true)]
+    pub with: Vec<OsString>,
 }
