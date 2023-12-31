@@ -1,19 +1,20 @@
 mod cli;
+mod database;
 mod fs;
 mod logger;
+mod samples;
 
+use bstr::ByteSlice;
 use clap::{ColorChoice, Parser};
-use cli::{Arguments, Command, Os};
-use fs::{report, report_io_error, AlreadyReported};
+use cli::{Arguments, Command};
+use database::CacheEntry;
+use fs::{check_status, print_args, AlreadyReported};
 use nu_ansi_term::Color;
 use std::{
-    collections::HashMap,
-    ffi::OsStr,
-    hash::{Hash, Hasher},
-    os::unix::prelude::OsStrExt,
-    path::{Path, PathBuf},
-    process::ChildStdin,
+    ffi::OsString, io::Write, os::unix::prelude::OsStrExt, path::Path, process::ChildStdin, rc::Rc,
 };
+
+use crate::{database::Database, samples::subcommand_convert};
 
 #[macro_export]
 macro_rules! bail {
@@ -21,56 +22,6 @@ macro_rules! bail {
         log::error!($($a)*);
         return Err(AlreadyReported);
     }};
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
-struct SerdeCacheEntry {
-    source_hash: String,
-    samples_hash: String,
-}
-
-#[derive(Clone, Default)]
-struct CacheEntry {
-    source_hash: u128,
-    samples_hash: u128,
-}
-
-impl From<&SerdeCacheEntry> for CacheEntry {
-    fn from(value: &SerdeCacheEntry) -> Self {
-        Self {
-            source_hash: u128::from_str_radix(&value.source_hash, 16).unwrap(),
-            samples_hash: u128::from_str_radix(&value.samples_hash, 16).unwrap(),
-        }
-    }
-}
-
-impl From<&CacheEntry> for SerdeCacheEntry {
-    fn from(value: &CacheEntry) -> Self {
-        Self {
-            source_hash: format!("{:032x}", value.source_hash),
-            samples_hash: format!("{:032x}", value.samples_hash),
-        }
-    }
-}
-
-type SerdeCache = HashMap<PathBuf, SerdeCacheEntry>;
-type Cache = HashMap<PathBuf, CacheEntry>;
-
-struct EntryPaths {
-    // input source code
-    source: PathBuf,
-    // input samples
-    samples: Option<PathBuf>,
-    // output binary
-    binary: PathBuf,
-    // uncompressed samples
-    samples_out: Option<PathBuf>,
-}
-
-#[derive(Default)]
-struct TestSample {
-    input: Option<PathBuf>,
-    output: Option<PathBuf>,
 }
 
 fn main() {
@@ -90,20 +41,18 @@ fn init() -> Arguments {
         (false, _) => log::LevelFilter::Trace,
     };
 
-    let color = match args.color {
-        clap::ColorChoice::Auto => anstyle_query::term_supports_ansi_color(),
-        clap::ColorChoice::Always => true,
-        clap::ColorChoice::Never => false,
+    if let clap::ColorChoice::Auto = args.color {
+        let supported = anstyle_query::term_supports_ansi_color();
+        args.color = match supported {
+            true => clap::ColorChoice::Always,
+            false => clap::ColorChoice::Never,
+        };
     };
-
-    if !color {
-        args.color = clap::ColorChoice::Never;
-    }
 
     logger::make_logger_from_env()
         .max_level(level)
         .print_level(true)
-        .color(color)
+        .color(matches!(args.color, clap::ColorChoice::Always))
         .install();
     args
 }
@@ -113,177 +62,94 @@ fn main_() -> Result<(), AlreadyReported> {
 
     log::trace!("{args:#?}");
 
-    let out_path = args.root.join("out");
-    let cache_path = args.root.join("out/cache.json");
+    let out_dir = args.root.join("out");
+    let cache_file = out_dir.join("cache.json");
 
-    match args.command {
-        Command::Run => {
-            if args.targets.len() != 1 {
+    match &args.command {
+        Command::Run { build_options } => {
+            if build_options.targets.len() != 1 {
                 bail!("The 'run' subcommand expects a single target");
             }
         }
         Command::Clean => {
-            return fs::remove_dir_all(&out_path);
+            return fs::remove_dir_all(&out_dir);
         }
         _ => {}
     };
-    let needs_samples = matches!(args.command, Command::Test);
 
-    if args.targets.is_empty() {
-        log::info!("No targets provided");
-        return Ok(());
+    if !out_dir.exists() {
+        fs::create_dir_all(&out_dir)?;
     }
 
-    if !out_path.exists() {
-        fs::create_dir(&out_path)?;
-    }
+    let mut cache = Database::new(cache_file, out_dir.clone())?;
 
-    let mut cache = load_cache(&cache_path).unwrap_or_default();
+    let binaries = match args.command.get_build_options() {
+        Some(options) => {
+            if options.targets.is_empty() {
+                log::info!("No targets provided");
+                return Ok(());
+            }
 
-    let entry_paths = args
-        .targets
-        .iter()
-        .flat_map(|source| {
-            prepare_target(source.as_ref(), &out_path, needs_samples, &args, &mut cache)
-        })
-        .collect::<Vec<_>>();
+            let mut errors = false;
+            let binaries = options
+                .targets
+                .iter()
+                .filter_map(|file| {
+                    cache
+                        .build_file(&file, options)
+                        .map_err(|_| {
+                            errors = true;
+                            ()
+                        })
+                        .ok()
+                })
+                .collect();
 
-    if entry_paths.len() != args.targets.len() {
-        log::info!("Errors occured in previous step, exiting");
-        return Err(AlreadyReported);
-    }
+            _ = cache.save_to_file();
+            binaries
+        }
+        _ => vec![],
+    };
 
-    _ = save_cache(cache, &cache_path);
-
-    match args.command {
-        Command::Build => {}
-        Command::With => subcommand_with(&entry_paths, &args),
-        Command::Clean => {}
-        Command::Run => {
-            let entry = entry_paths.first().unwrap();
+    match &args.command {
+        Command::Build { .. } => {}
+        Command::With { with, .. } => subcommand_with(&binaries, with),
+        Command::Run { .. } => {
+            let entry = binaries.first().unwrap();
             log::info!("Running {}", entry.source.display());
             exec(&mut std::process::Command::new(&entry.binary))?;
         }
-        Command::Test => subcomand_test(&entry_paths, &args),
+        Command::Test { diff, .. } => subcomand_test(&binaries, &out_dir, &args, diff.as_deref()),
+        Command::Convert {
+            archive,
+            output,
+            sample_subdirs,
+        } => {
+            let output = output.clone().unwrap_or_else(|| {
+                let mut path = archive.clone();
+                if let Some(str) = archive.file_name().unwrap().to_str() {
+                    let found = [".gz", ".tgz", ".tar.gz"]
+                        .iter()
+                        .flat_map(|ext| str.strip_suffix(*ext))
+                        .next();
+                    if let Some(found) = found {
+                        path = archive.with_file_name(found);
+                    }
+                }
+                path.with_extension("samples")
+            });
+
+            subcommand_convert(&out_dir, &archive, &output, &args, &sample_subdirs)?;
+        }
+        Command::Clean => unreachable!(),
     }
 
     Ok(())
 }
 
-fn into_hash<T: Hash>(value: &T) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut hasher);
-    hasher.finish()
-}
-
-fn prepare_target(
-    source: &Path,
-    out: &Path,
-
-    needs_samples: bool,
-    args: &cli::Arguments,
-    cache: &mut Cache,
-) -> Result<EntryPaths, AlreadyReported> {
-    if source.is_absolute() {
-        report("path is absolute", source).to_result()?;
-    }
-    let ext = source.extension().unwrap_or_default().as_bytes();
-    if ext != b"c" && ext != b"cpp" {
-        report("must be a C/C++ source file", source).to_result()?;
-    }
-
-    let entry = cache.entry(source.to_path_buf()).or_default();
-    let paths = make_paths(source, out);
-
-    let file_hash = hash_file(&paths.source)?;
-    let flags_hash = into_hash(&(&args.compiler_args, &args.defines));
-    let source_hash = file_hash ^ flags_hash as u128;
-
-    if entry.source_hash != source_hash {
-        entry.source_hash = source_hash;
-        log::info!("building {}", paths.source.display());
-        compile_file(&paths, args)?;
-    } else {
-        log::debug!("Skipping build `{}` unchanged", paths.source.display());
-    }
-
-    if needs_samples {
-        if let Some(samples) = &paths.samples {
-            let samples_hash = hash_file(samples)?;
-            if entry.samples_hash != samples_hash {
-                entry.samples_hash = samples_hash;
-                extract_archive(&paths)?;
-            } else {
-                log::debug!("Skipping extract `{}` unchanged", samples.display());
-            }
-        } else {
-            bail!("No sample found for `{}`", paths.source.display());
-        }
-    } else {
-        log::debug!(
-            "Skipping extract for `{}` needs_samples = false",
-            paths.source.display()
-        );
-    }
-
-    Ok(paths)
-}
-
-fn make_paths(source: &Path, out: &Path) -> EntryPaths {
-    let samples = ["gz", "tgz", "tar.gz"]
-        .iter()
-        .map(|ext| source.with_extension(ext))
-        .filter(|path| path.exists())
-        .next();
-
-    let output = out.join(&source);
-
-    EntryPaths {
-        source: source.to_owned(),
-        binary: output.with_extension(""),
-        samples_out: samples.as_ref().map(|_| output.with_extension("samples")),
-        samples,
-    }
-}
-
-fn load_cache(cache_path: &Path) -> fs::Result<Cache> {
-    match std::fs::read_to_string(cache_path) {
-        Ok(contents) => Ok(serde_json::from_str::<SerdeCache>(&contents)
-            .map_err(|e| {
-                log::trace!("failed to deserialize cache\n  {e}");
-                AlreadyReported
-            })?
-            .drain()
-            .map(|(k, v)| (k, CacheEntry::from(&v)))
-            .collect()),
-        Err(e) => {
-            log::trace!("failed to load `{}`\n  {e}", cache_path.display());
-            Err(AlreadyReported)
-        }
-    }
-}
-
-fn save_cache(cache: Cache, cache_path: &Path) -> fs::Result<()> {
-    let ser = cache
-        .into_iter()
-        .map(|(k, v)| (k, SerdeCacheEntry::from(&v)))
-        .collect::<SerdeCache>();
-    let serialized = serde_json::ser::to_string_pretty(&ser).unwrap();
-
-    let mut file = fs::options_open(
-        cache_path,
-        std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true),
-    )?;
-
-    fs::write_all(&mut file, cache_path, serialized.as_bytes())
-}
-
-fn subcommand_with(entry_paths: &[EntryPaths], args: &cli::Arguments) {
+fn subcommand_with(entry_paths: &[Rc<CacheEntry>], arguments: &[OsString]) {
     let artifacts = entry_paths.iter().map(|p| p.binary.as_os_str().to_owned());
-    let mut arguments = args.with.clone();
+    let mut arguments = arguments.to_owned();
 
     let mut bin_subsituted = false;
     let mut i = 0;
@@ -304,61 +170,110 @@ fn subcommand_with(entry_paths: &[EntryPaths], args: &cli::Arguments) {
     _ = exec(std::process::Command::new(&arguments[0]).args(&arguments[1..]));
 }
 
-#[cfg(unix)]
 fn exec(command: &mut std::process::Command) -> fs::Result<()> {
+    print_args(command);
+
     use std::os::unix::process::CommandExt;
-    print_args(command);
-    check_status("child", Err(command.exec()))
+    #[cfg(unix)]
+    let status = Err(command.exec());
+    #[cfg(not(unix))]
+    let status = command.status();
+
+    check_status("child", status)
 }
 
-#[cfg(not(unix))]
-fn exec(command: &mut std::process::Command) -> fs::Result<()> {
-    print_args(command);
-    check_status("child", command.status())
-}
-
-fn subcomand_test(entry_paths: &[EntryPaths], args: &cli::Arguments) {
-    let (w_sender, w_receiver) = std::sync::mpsc::channel::<(std::fs::File, ChildStdin)>();
+fn subcomand_test(
+    entry_paths: &[Rc<CacheEntry>],
+    out_dir: &Path,
+    args: &cli::Arguments,
+    diff_command: Option<&str>,
+) {
+    let (w_sender, w_receiver) = std::sync::mpsc::channel::<(Box<[u8]>, ChildStdin)>();
     let join = std::thread::spawn(move || {
-        while let Ok((mut file, mut stdin)) = w_receiver.recv() {
-            if let Err(e) = std::io::copy(&mut file, &mut stdin) {
+        while let Ok((file, mut stdin)) = w_receiver.recv() {
+            if let Err(e) = stdin.write_all(&file) {
                 _ = fs::report_custom("writing to child stdin failed", e);
             }
         }
     });
 
     for paths in entry_paths {
-        let samples = collect_samples(paths.samples_out.as_deref().unwrap(), args);
         log::info!("Testing {}", paths.source.display());
-        for (name, sample) in &samples {
-            _ = test_samples(name, sample, paths, &w_sender, args);
-        }
+        test_binary(paths, out_dir, args, &w_sender, diff_command);
     }
 
     drop(w_sender);
     _ = join.join();
 }
 
+fn test_binary(
+    paths: &CacheEntry,
+    out_dir: &Path,
+    args: &Arguments,
+    w_sender: &std::sync::mpsc::Sender<(Box<[u8]>, ChildStdin)>,
+    diff_command: Option<&str>,
+) -> Option<()> {
+    let samples_out = paths.samples_out.as_ref()?;
+    let contents = fs::read(samples_out).ok()?;
+
+    let diff_path = out_dir.join("diff");
+    _ = fs::create_dir_all(&diff_path);
+    let file_name = paths.source.file_name().unwrap();
+
+    let mut sections = samples::SampleIterator::new(&contents)?;
+    while let Some(input) = sections.next() {
+        let input_header = input.header.to_str().ok();
+        let test_name = input_header.and_then(|s| s.strip_suffix(" in"));
+        let output = sections.next();
+
+        if input_header.is_none() {
+            log::error!("input header `{}` isn't UTF8", input.header.to_str_lossy());
+        };
+        if input_header.is_some() && test_name.is_none() {
+            log::error!(
+                "input header `{}` doesn't end with ` in`",
+                input.header.to_str_lossy()
+            );
+        };
+        if output.is_none() {
+            log::error!(
+                "input header `{}` doesn't have an output section",
+                input.header.to_str_lossy()
+            );
+        }
+        if input_header.is_none() || test_name.is_none() || output.is_none() {
+            continue;
+        }
+
+        let mut name = file_name.to_owned();
+        name.push("_");
+        name.push(test_name.unwrap());
+        let test_diff_path = diff_path.join(name);
+        _ = test_samples(
+            test_name.unwrap().as_bytes(),
+            input.body,
+            output.unwrap().body,
+            &test_diff_path,
+            paths,
+            w_sender,
+            diff_command,
+            args,
+        );
+    }
+
+    Some(())
+}
+
 fn test_samples(
-    name: &PathBuf,
-    sample: &TestSample,
-    paths: &EntryPaths,
-    w_sender: &std::sync::mpsc::Sender<(std::fs::File, ChildStdin)>,
+    name: &[u8],
+    input: &[u8],
+    output: &[u8],
+    save_text_path: &Path,
+    paths: &CacheEntry,
+    w_sender: &std::sync::mpsc::Sender<(Box<[u8]>, ChildStdin)>,
+    diff_command: Option<&str>,
     args: &Arguments,
 ) -> Result<(), AlreadyReported> {
-    let Some(input) = &sample.input else {
-        bail!(
-            "Sample {} is missing the corresponding input.",
-            name.display()
-        );
-    };
-    let Some(output) = &sample.output else {
-        bail!(
-            "Sample {} is missing the corresponding output.",
-            name.display()
-        );
-    };
-
     let mut child = std::process::Command::new(&paths.binary)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -370,7 +285,7 @@ fn test_samples(
     let mut stdout = child.stdout.take().unwrap();
 
     w_sender
-        .send((fs::open(&input)?, stdin))
+        .send((input.to_owned().into_boxed_slice(), stdin))
         .expect("Writing thread died!");
 
     let mut child_stdout = Vec::new();
@@ -382,9 +297,9 @@ fn test_samples(
     // TODO implement a timeout?
     _ = child.wait();
 
-    let expected = fs::read(output)?;
+    let source = paths.source.display();
+    let display = name.to_str_lossy();
 
-    let display = input.display();
     // janky configurable color
     let (red, green) = match args.color == ColorChoice::Never {
         true => (Color::Default, Color::Default),
@@ -393,95 +308,39 @@ fn test_samples(
     let err = red.paint("Err");
     let ok = green.paint("Ok");
 
-    if child_stdout != expected {
-        log::info!(" {display} {err}",);
-        _ = diff_failed(input, output, &child_stdout, args);
+    if child_stdout != output {
+        log::info!("{source} {display} {err}");
+        _ = diff_failed(
+            save_text_path,
+            input,
+            output,
+            &child_stdout,
+            args,
+            diff_command,
+        );
     } else {
-        log::info!(" {display} {ok}");
+        log::info!("{source} {display} {ok}");
     }
     Ok(())
 }
 
-fn collect_samples(dir: &Path, args: &Arguments) -> Vec<(PathBuf, TestSample)> {
-    let mut samples: HashMap<PathBuf, TestSample> = HashMap::new();
-    let mut depth = 0;
-    visit_files(dir, |event| {
-        match event {
-            TraversalEvent::EnterDirectory(dir) => {
-                if depth == 0
-                    && !args.sample_subdirs.is_empty()
-                    && !args
-                        .sample_subdirs
-                        .iter()
-                        .find(|s| dir.file_name().unwrap() == s.as_os_str())
-                        .is_some()
-                {
-                    return TraversalResponse::Skip;
-                }
-                depth += 1;
-            }
-            TraversalEvent::LeaveDirectory => {
-                depth -= 1;
-            }
-            TraversalEvent::File(file) => {
-                let file = file.strip_prefix(&args.root).unwrap();
-                let mut add = |name: &[u8], os: Os, input: bool| {
-                    log::trace!(
-                        "Found sample file {}: endings {os:?}, input {input}",
-                        file.display()
-                    );
-                    if args.os == os {
-                        let full = file.parent().unwrap().join(OsStr::from_bytes(name));
-                        let entry = samples.entry(full).or_default();
-                        if input {
-                            if entry.input.is_some() {
-                                log::error!("duplicate input file {}", file.display());
-                            }
-                            entry.input = Some(file.to_owned());
-                        } else {
-                            if entry.output.is_some() {
-                                log::error!("duplicate output file {}", file.display());
-                            }
-                            entry.output = Some(file.to_owned());
-                        }
-                    } else {
-                        log::trace!("skipping {}: endings do not match", file.display());
-                    }
-                };
+fn diff_failed(
+    path: &Path,
+    input: &[u8],
+    expected: &[u8],
+    actual: &[u8],
+    args: &Arguments,
+    diff_command: Option<&str>,
+) -> fs::Result<()> {
+    let input_path = path.with_extension("in");
+    let output_path = path.with_extension("out");
+    let actual_path = path.with_extension("out.actual");
 
-                let name = file.file_name().unwrap().as_bytes();
-                if let Some(name) = name.strip_suffix(b"_in.txt") {
-                    add(name, Os::Unix, true);
-                } else if let Some(name) = name.strip_suffix(b"_out.txt") {
-                    add(name, Os::Unix, false);
-                } else if let Some(name) = name.strip_suffix(b"_in_win.txt") {
-                    add(name, Os::Windows, true);
-                } else if let Some(name) = name.strip_suffix(b"_out_win.txt") {
-                    add(name, Os::Windows, false);
-                }
-            }
-        }
-        TraversalResponse::Continue
-    });
+    fs::write(&input_path, input)?;
+    fs::write(&output_path, expected)?;
+    fs::write(&actual_path, actual)?;
 
-    let mut samples = samples.drain().collect::<Vec<_>>();
-    samples.sort_by(|(a, _), (b, _)| a.cmp(b));
-    samples
-}
-
-/// Appends a string to the original path's filename
-fn append_filename(path: &Path, append: &str) -> Option<PathBuf> {
-    let mut filename = path.file_name()?.as_bytes().to_vec();
-    filename.extend_from_slice(append.as_bytes());
-    let new = path.with_file_name(&OsStr::from_bytes(&filename));
-    Some(new)
-}
-
-fn diff_failed(input: &Path, expected: &Path, actual: &[u8], args: &Arguments) -> fs::Result<()> {
-    let save = append_filename(&expected, ".actual").unwrap();
-    fs::write(&save, actual)?;
-
-    let Some(diff) = &args.diff else {
+    let Some(diff) = diff_command else {
         return Ok(());
     };
 
@@ -511,162 +370,13 @@ fn diff_failed(input: &Path, expected: &Path, actual: &[u8], args: &Arguments) -
         builder
             .arg("-c")
             .arg(diff)
-            .env("INPUT", input)
-            .env("EXPECTED", expected)
-            .env("ACTUAL", save);
+            .env("INPUT", input_path)
+            .env("EXPECTED", output_path)
+            .env("ACTUAL", actual_path);
 
         print_args(&builder);
         _ = check_status("Diff command", builder.status());
     }
 
     Ok(())
-}
-
-fn check_status(
-    command: &str,
-    status: std::io::Result<std::process::ExitStatus>,
-) -> fs::Result<()> {
-    match status {
-        Ok(status) => {
-            if !status.success() {
-                log::debug!("{command} exited with code {}", status.code().unwrap_or(-1));
-            }
-            Ok(())
-        }
-        Err(e) => {
-            bail!("{command} failed: {e}");
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TraversalResponse {
-    Continue,
-    Skip,
-    Stop,
-}
-
-enum TraversalEvent<'a> {
-    EnterDirectory(&'a Path),
-    LeaveDirectory,
-    File(&'a Path),
-}
-
-fn visit_files(dir: &Path, mut fun: impl FnMut(TraversalEvent) -> TraversalResponse) {
-    visit_files_impl(dir, &mut fun);
-}
-
-fn visit_files_impl(
-    dir: &Path,
-    fun: &mut dyn FnMut(TraversalEvent) -> TraversalResponse,
-) -> TraversalResponse {
-    let iter = fs::read_dir(dir).unwrap();
-    for element in iter {
-        let entry = match element {
-            Ok(ok) => ok,
-            Err(e) => {
-                log::trace!("error listing {dir:?}: {e}");
-                continue;
-            }
-        };
-        let path = entry.path();
-        match entry.metadata() {
-            Ok(ty) => {
-                if ty.is_symlink() && ty.is_dir() {
-                    // do not follow symlinks to prevent infinite loops
-                    log::trace!("{path:?} is a directory symlink, skipping")
-                } else if ty.is_dir() {
-                    match fun(TraversalEvent::EnterDirectory(&path)) {
-                        TraversalResponse::Continue => {
-                            visit_files_impl(&path, fun);
-                            if fun(TraversalEvent::LeaveDirectory) == TraversalResponse::Stop {
-                                return TraversalResponse::Stop;
-                            }
-                        }
-                        TraversalResponse::Skip => continue,
-                        TraversalResponse::Stop => return TraversalResponse::Stop,
-                    }
-                } else if ty.is_file() {
-                    if fun(TraversalEvent::File(&path)) == TraversalResponse::Stop {
-                        return TraversalResponse::Stop;
-                    }
-                }
-            }
-            Err(e) => {
-                fs::report_io_error("DirEntry::metadata", &path, e);
-            }
-        }
-    }
-    TraversalResponse::Continue
-}
-
-fn extract_archive(paths: &EntryPaths) -> fs::Result<()> {
-    let Some(path) = &paths.samples else {
-        return Ok(());
-    };
-    let parent = paths.samples_out.as_ref().unwrap();
-
-    fs::create_dir_all(parent)?;
-    let mut builder = std::process::Command::new("tar");
-    builder.arg("-xzf").arg(path).arg("-C").arg(parent);
-
-    print_args(&builder);
-    check_status("tar", builder.status())
-}
-
-fn compile_file(paths: &EntryPaths, args: &cli::Arguments) -> fs::Result<()> {
-    _ = fs::create_dir_all(paths.binary.parent().unwrap());
-    if paths.binary.exists() {
-        _ = fs::remove_file(&paths.binary);
-    }
-    let mut builder = std::process::Command::new("g++");
-    if args.override_compiler_args.is_none() {
-        builder.args(&["-std=c++11", "-Wall", "-pedantic"]);
-    }
-    for define in &args.defines {
-        builder.arg("-D");
-        builder.arg(define);
-    }
-    builder
-        .args(
-            args.compiler_args
-                .as_deref()
-                .unwrap_or("")
-                .split_ascii_whitespace(),
-        )
-        .arg("-o")
-        .arg(&paths.binary)
-        .arg(&paths.source);
-
-    print_args(&builder);
-    check_status("g++", builder.status())
-}
-
-fn hash_file(path: &Path) -> fs::Result<u128> {
-    let input = fs::open(path)?;
-    let mut hasher = blake3::Hasher::new();
-
-    hasher
-        .update_reader(&input)
-        .map_err(|e| report_io_error("failed to update_reader", path, e))?;
-
-    let mut buf = [0; 16];
-    hasher.finalize_xof().fill(&mut buf);
-    Ok(u128::from_le_bytes(buf))
-}
-
-fn print_args(builder: &std::process::Command) {
-    use std::io::Write as _;
-    let mut buf = Vec::new();
-
-    _ = buf.write_all(builder.get_program().as_bytes());
-    for a in builder.get_args() {
-        _ = buf.write_all(b" ");
-        _ = buf.write_all(a.as_bytes());
-    }
-
-    log::trace!(
-        "Running command `{}`",
-        OsStr::from_bytes(buf.as_slice()).to_string_lossy()
-    )
 }
