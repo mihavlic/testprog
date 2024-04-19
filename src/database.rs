@@ -82,7 +82,7 @@ impl Database {
             report("path is absolute", source_file).to_result()?;
         }
         let extension = source_file.extension().unwrap_or_default().as_bytes();
-        if !matches!(extension, b"c" | b"cpp") {
+        if !matches!(extension, b"c" | b"cpp" | b"h" | b"hpp") {
             report("must be a C/C++ source file", source_file).to_result()?;
         }
 
@@ -146,7 +146,8 @@ fn compile_file(paths: &CacheEntry, args: &BuildOpts) -> fs::Result<()> {
         .arg(&paths.source);
 
     print_args(&builder);
-    check_status("g++", builder.status())
+    check_status("g++", builder.status())?;
+    fs::check_exists(&paths.binary)
 }
 
 fn hash_file(path: &Path) -> fs::Result<u128> {

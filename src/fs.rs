@@ -61,6 +61,16 @@ pub fn read(path: &Path) -> Result<Vec<u8>> {
     report!(res, "failed to read file", path)
 }
 #[track_caller]
+pub fn check_exists(path: &Path) -> Result<()> {
+    match path.exists() {
+        true => Ok(()),
+        false => {
+            log::error!("{} `{}`", "path does not exist", path.display());
+            Err(AlreadyReported)
+        }
+    }
+}
+#[track_caller]
 pub fn read_into(path: &Path, buf: &mut Vec<u8>) -> Result<usize> {
     let mut file = options_open(path, OpenOptions::new().read(true))?;
     let res = file.read_to_end(buf);
