@@ -66,6 +66,13 @@ impl Database {
             cache: parsed,
         })
     }
+    pub fn new_empty(cache_file: PathBuf, out_dir: PathBuf) -> Database {
+        Database {
+            cache_file,
+            out_dir,
+            cache: HashMap::new(),
+        }
+    }
     pub fn build_file(
         &mut self,
         source_file: &Path,

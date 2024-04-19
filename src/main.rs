@@ -81,7 +81,11 @@ fn main_() -> Result<(), AlreadyReported> {
         fs::create_dir_all(&out_dir)?;
     }
 
-    let mut cache = Database::new(cache_file, out_dir.clone())?;
+    let mut cache = if args.no_cache {
+        Database::new_empty(cache_file, out_dir.clone())
+    } else {
+        Database::new(cache_file, out_dir.clone())?
+    };
 
     let binaries = match args.command.get_build_options() {
         Some(options) => {
@@ -105,7 +109,9 @@ fn main_() -> Result<(), AlreadyReported> {
                 })
                 .collect();
 
-            _ = cache.save_to_file();
+            if !args.no_cache {
+                _ = cache.save_to_file();
+            }
             binaries
         }
         _ => vec![],

@@ -116,6 +116,9 @@ pub struct Arguments {
     /// The action to perform
     #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
     pub color: ColorChoice,
+    /// Do not read or save the cache.json file
+    #[arg(long = "no-cache", default_value_t = false)]
+    pub no_cache: bool,
 
     #[clap(subcommand)]
     pub command: Command,
